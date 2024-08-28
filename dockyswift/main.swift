@@ -8,7 +8,14 @@ import Foundation
 import ApplicationServices
 import Cocoa
 
-
+class ClickableImageView: NSImageView {
+    var onMouseUp: (() -> Void)?
+    
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        onMouseUp?()
+    }
+}
 class AccessibilityHelper {
     private var runningApplicationsDict: [String: NSRunningApplication]
     private var previewWindows: [NSWindow] = []
@@ -188,61 +195,67 @@ class AccessibilityHelper {
                                         backing: .buffered,
                                         defer: false)
            previewWindow.title = "Preview - \(title)"
-           previewWindow.level = .screenSaver  // Highest level to ensure visibility
+           previewWindow.level = .screenSaver
+
            previewWindow.isOpaque = true
            previewWindow.backgroundColor = NSColor.systemRed  // Bright red for high visibility
            previewWindow.hasShadow = true
+        
 
-           let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handlePreviewClick(_:)))
-           previewWindow.contentView?.addGestureRecognizer(clickGesture)
-
-           // Add a label to the window for easier identification
-           let label = NSTextField(frame: NSRect(x: 10, y: previewSize.height - 30, width: previewSize.width - 20, height: 20))
-           label.stringValue = title
-           label.isEditable = false
-           label.isBezeled = false
-           label.drawsBackground = false
-           label.textColor = NSColor.white
-           previewWindow.contentView?.addSubview(label)
 
            print("Created preview window for '\(title)' with size: \(previewSize)")
 
            return previewWindow
        }
-    
     private func updatePreviewContent(window: NSWindow, title: String, windowRef: AXUIElement, windowID: CGWindowID?, previewSize: CGSize) {
-           guard let windowID = windowID else {
-               print("No valid window ID for window: \(title)")
-               return
-           }
+        guard let windowID = windowID else {
+            print("No valid window ID for window: \(title)")
+            return
+        }
 
-           let cgImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .bestResolution])
+        let cgImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .bestResolution])
 
-           DispatchQueue.main.async {
-               if let imageView = window.contentView?.subviews.first as? NSImageView {
-                   if let cgImage = cgImage {
-                       let thumbnail = NSImage(cgImage: cgImage, size: previewSize)
-                       imageView.image = thumbnail
-                       print("Successfully updated thumbnail for window: \(title)")
-                   } else {
-                       print("Failed to create thumbnail for window: \(title)")
-                       imageView.image = NSImage(named: "NSApplicationIcon")  // Fallback to default icon
-                   }
-               } else {
-                   let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height))
-                   if let cgImage = cgImage {
-                       let thumbnail = NSImage(cgImage: cgImage, size: previewSize)
-                       imageView.image = thumbnail
-                       print("Successfully created thumbnail for window: \(title)")
-                   } else {
-                       print("Failed to create thumbnail for window: \(title)")
-                       imageView.image = NSImage(named: "NSApplicationIcon")  // Fallback to default icon
-                   }
-                   window.contentView?.addSubview(imageView)
-               }
-           }
-       }
+        DispatchQueue.main.async {
+            let imageView: ClickableImageView
+            if let existingImageView = window.contentView?.subviews.first as? ClickableImageView {
+                imageView = existingImageView
+            } else {
+                imageView = ClickableImageView(frame: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height))
+                window.contentView?.addSubview(imageView)
+            }
 
+            if let cgImage = cgImage {
+                let thumbnail = NSImage(cgImage: cgImage, size: previewSize)
+                imageView.image = thumbnail
+                print("Successfully updated thumbnail for window: \(title)")
+            } else {
+                print("Failed to create thumbnail for window: \(title)")
+                imageView.image = NSImage(named: "NSApplicationIcon")  // Fallback to default icon
+            }
+
+            imageView.tag = self.currentAppWindows.count - 1  // Set tag to index in currentAppWindows
+            imageView.onMouseUp = { [weak self] in
+                self?.handleImageViewClick(imageView)
+            }
+
+            print("Added click handler for window: \(title)")
+        }
+    }
+
+    private func handleImageViewClick(_ sender: NSImageView) {
+        print("Image view clicked")
+        guard sender.tag < currentAppWindows.count else { return }
+        
+        let (_, windowRef, _) = currentAppWindows[sender.tag]
+        
+        // Bring the window to the foreground
+        AXUIElementPerformAction(windowRef, kAXRaiseAction as CFString)
+        
+        // Activate the application
+        if let app = runningApplicationsDict[currentDockItemName ?? ""] {
+            app.activate(options: .activateIgnoringOtherApps)
+        }
+    }
        @objc private func handlePreviewClick(_ gestureRecognizer: NSClickGestureRecognizer) {
            guard let clickedWindow = gestureRecognizer.view?.window,
                  let index = previewWindows.firstIndex(of: clickedWindow),
@@ -360,6 +373,7 @@ class AccessibilityHelper {
         }
     }
 }
+
 class PermissionsService {
     var isTrusted: Bool
 
