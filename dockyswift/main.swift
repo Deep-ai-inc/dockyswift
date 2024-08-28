@@ -4,16 +4,26 @@ import Cocoa
 
 let kAXWindowIDAttribute: CFString = "AXWindowID" as CFString
 
+import Foundation
+import ApplicationServices
+import Cocoa
+
+
 class AccessibilityHelper {
-    
     private var runningApplicationsDict: [String: NSRunningApplication]
-    
+    private var previewWindows: [NSWindow] = []
+    private var currentAppWindows: [(title: String, windowRef: AXUIElement, windowID: CGWindowID?)] = []
+    private var currentDockItemName: String?
+    private var isHoveringOverDockItem = false
+    private var lastHoveredDockItem: String?
+      private var isHoveringOverAnyDockItem = false
+
     init() {
         guard AXIsProcessTrusted() else {
             print("Accessibility permissions are not enabled. Please go to System Preferences -> Security & Privacy -> Privacy -> Accessibility and add this application.")
             exit(1)
         }
-        
+
         self.runningApplicationsDict = Dictionary(NSWorkspace.shared.runningApplications.compactMap { app in
             if let appName = app.localizedName {
                 return (appName, app)
@@ -21,7 +31,7 @@ class AccessibilityHelper {
             return nil
         }, uniquingKeysWith: { (first, _) in first })
     }
-    
+
     func getMouseLocation() -> CGPoint {
         let mouseLocation = NSEvent.mouseLocation
         if let screenHeight = NSScreen.main?.frame.height {
@@ -47,138 +57,268 @@ class AccessibilityHelper {
 
         return array
     }
-    func getWindowInfoByName(title: String) -> CGWindowID? {
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        let windowInfoList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]
-        
-        for windowInfo in windowInfoList ?? [] {
-            if let windowTitle = windowInfo[kCGWindowName as String] as? String, windowTitle == title,
-               let windowID = windowInfo[kCGWindowNumber as String] as? UInt32 {
-                return windowID
-            }
-        }
-        return nil
-    }
 
-    func getWindows(for app: NSRunningApplication) -> [(title: String, windowRef: AXUIElement, windowID: CGWindowID)] {
-        var result: [(title: String, windowRef: AXUIElement, windowID: CGWindowID)] = []
+  
+    func getWindows(for app: NSRunningApplication) -> [(title: String, windowRef: AXUIElement, windowID: CGWindowID?)] {
+        var result: [(title: String, windowRef: AXUIElement, windowID: CGWindowID?)] = []
 
-        // Create an AXUIElement for the application
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
 
-        // Prepare a CFTypeRef to hold the attribute's value
         var windowsValue: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue)
 
-        // Check if the window list was successfully obtained
         guard error == .success, let windowListRef = windowsValue, let windowList = windowListRef as? [AXUIElement] else {
             return result
         }
 
-        // Get a list of all windows currently on screen
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let cgWindows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return result
         }
-        
+
         for window in windowList {
-            // Try to get the window title
             var titleValue: CFTypeRef?
             if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleValue) == .success, let title = titleValue as? String {
-                
-                // Try to find the corresponding CGWindowID
-                var windowIDValue: CGWindowID = 0
-                var successful = false
-                
+                var windowIDValue: CGWindowID?
+
                 for cgWindow in cgWindows {
-                    if let ownerPID = cgWindow[kCGWindowOwnerPID as String] as? pid_t, ownerPID == app.processIdentifier,
+                    if let ownerPID = cgWindow[kCGWindowOwnerPID as String] as? pid_t,
+                       ownerPID == app.processIdentifier,
+                       let windowTitle = cgWindow[kCGWindowName as String] as? String,
+                       windowTitle == title,
                        let windowNumber = cgWindow[kCGWindowNumber as String] as? CGWindowID {
                         windowIDValue = windowNumber
-                        successful = true
                         break
                     }
                 }
-                
-                if successful {
-                    result.append((title: title, windowRef: window, windowID: windowIDValue))
-                }
+
+                result.append((title: title, windowRef: window, windowID: windowIDValue))
+            }
+        }
+
+        return result
+    }
+   
+    private func areWindowArraysEqual(_ arr1: [(title: String, windowRef: AXUIElement, windowID: CGWindowID?)],
+                                      _ arr2: [(title: String, windowRef: AXUIElement, windowID: CGWindowID?)]) -> Bool {
+        guard arr1.count == arr2.count else { return false }
+        
+        for (window1, window2) in zip(arr1, arr2) {
+            if window1.title != window2.title || window1.windowID != window2.windowID {
+                return false
             }
         }
         
-        return result
+        return true
     }
-    func saveWindowPreview(windowID: CGWindowID, withTitle title: String) {
-        // Dealing with deprecated method issue: you need macOS < 14.0 or alternative new methods.
-        let options: CGWindowImageOption = [.boundsIgnoreFraming]
-        guard let windowImageRef = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, options) else {
-            print("Failed to capture window image for window ID: \(windowID)")
-            return
+    func displayWindowPreviews(windows: [(title: String, windowRef: AXUIElement, windowID: CGWindowID?)], atPosition position: CGPoint, size: CGSize) {
+          print("displayWindowPreviews called with \(windows.count) windows")
+          print("Dock item position: \(position), size: \(size)")
+
+          // Remove existing preview windows if they're for a different app
+          if !areWindowArraysEqual(currentAppWindows, windows) {
+              hideAllPreviews()
+          }
+
+          guard !windows.isEmpty else {
+              print("No windows to display")
+              return
+          }
+
+          let previewSize = CGSize(width: 300, height: 225)  // Increased size for visibility
+          let spacing: CGFloat = 20
+          let totalWidth = CGFloat(windows.count) * (previewSize.width + spacing) - spacing
+
+          // Calculate the starting X position to center the previews
+          let startX = position.x - totalWidth / 2
+
+          guard let screen = NSScreen.main else {
+              print("Unable to get main screen")
+              return
+          }
+
+          print("Main screen frame: \(screen.frame)")
+          print("Main screen visibleFrame: \(screen.visibleFrame)")
+
+          // Calculate the Y position for previews
+          let dockHeight = screen.frame.height - screen.visibleFrame.height
+          let previewY = screen.visibleFrame.minY + dockHeight + 20  // 20 pixels above the dock
+
+          print("Calculated dock height: \(dockHeight)")
+          print("Calculated preview Y: \(previewY)")
+
+          for (index, (title, windowRef, windowID)) in windows.enumerated() {
+              if index >= previewWindows.count {
+                  // Create a new preview window if needed
+                  let previewWindow = createPreviewWindow(title: title, windowRef: windowRef, windowID: windowID, previewSize: previewSize)
+                  previewWindows.append(previewWindow)
+              }
+
+              let previewWindow = previewWindows[index]
+
+              // Update the preview content
+              updatePreviewContent(window: previewWindow, title: title, windowRef: windowRef, windowID: windowID, previewSize: previewSize)
+
+              // Position the preview window
+              let previewX = startX + CGFloat(index) * (previewSize.width + spacing)
+              let screenPositionedFrame = NSRect(x: previewX, y: previewY, width: previewSize.width, height: previewSize.height)
+              previewWindow.setFrame(screenPositionedFrame, display: true)
+
+              print("Setting window frame for '\(title)' to: \(screenPositionedFrame)")
+
+              // Delay ordering front to ensure setup is complete
+              DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                  previewWindow.orderFront(nil)
+                  print("Window ordered front for: \(title)")
+              }
+          }
+
+          // Remove any excess preview windows
+          while previewWindows.count > windows.count {
+              previewWindows.last?.close()
+              previewWindows.removeLast()
+          }
+
+          currentAppWindows = windows
+      }
+
+    private func createPreviewWindow(title: String, windowRef: AXUIElement, windowID: CGWindowID?, previewSize: CGSize) -> NSWindow {
+           let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height),
+                                        styleMask: [.borderless, .titled],
+                                        backing: .buffered,
+                                        defer: false)
+           previewWindow.title = "Preview - \(title)"
+           previewWindow.level = .screenSaver  // Highest level to ensure visibility
+           previewWindow.isOpaque = true
+           previewWindow.backgroundColor = NSColor.systemRed  // Bright red for high visibility
+           previewWindow.hasShadow = true
+
+           let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handlePreviewClick(_:)))
+           previewWindow.contentView?.addGestureRecognizer(clickGesture)
+
+           // Add a label to the window for easier identification
+           let label = NSTextField(frame: NSRect(x: 10, y: previewSize.height - 30, width: previewSize.width - 20, height: 20))
+           label.stringValue = title
+           label.isEditable = false
+           label.isBezeled = false
+           label.drawsBackground = false
+           label.textColor = NSColor.white
+           previewWindow.contentView?.addSubview(label)
+
+           print("Created preview window for '\(title)' with size: \(previewSize)")
+
+           return previewWindow
+       }
+    
+    private func updatePreviewContent(window: NSWindow, title: String, windowRef: AXUIElement, windowID: CGWindowID?, previewSize: CGSize) {
+           guard let windowID = windowID else {
+               print("No valid window ID for window: \(title)")
+               return
+           }
+
+           let cgImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .bestResolution])
+
+           DispatchQueue.main.async {
+               if let imageView = window.contentView?.subviews.first as? NSImageView {
+                   if let cgImage = cgImage {
+                       let thumbnail = NSImage(cgImage: cgImage, size: previewSize)
+                       imageView.image = thumbnail
+                       print("Successfully updated thumbnail for window: \(title)")
+                   } else {
+                       print("Failed to create thumbnail for window: \(title)")
+                       imageView.image = NSImage(named: "NSApplicationIcon")  // Fallback to default icon
+                   }
+               } else {
+                   let imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height))
+                   if let cgImage = cgImage {
+                       let thumbnail = NSImage(cgImage: cgImage, size: previewSize)
+                       imageView.image = thumbnail
+                       print("Successfully created thumbnail for window: \(title)")
+                   } else {
+                       print("Failed to create thumbnail for window: \(title)")
+                       imageView.image = NSImage(named: "NSApplicationIcon")  // Fallback to default icon
+                   }
+                   window.contentView?.addSubview(imageView)
+               }
+           }
+       }
+
+       @objc private func handlePreviewClick(_ gestureRecognizer: NSClickGestureRecognizer) {
+           guard let clickedWindow = gestureRecognizer.view?.window,
+                 let index = previewWindows.firstIndex(of: clickedWindow),
+                 index < currentAppWindows.count else {
+               return
+           }
+
+           let (_, windowRef, _) = currentAppWindows[index]
+           
+           // Bring the window to the foreground
+           AXUIElementPerformAction(windowRef, kAXRaiseAction as CFString)
+           
+           // Activate the application
+           if let app = runningApplicationsDict[currentDockItemName ?? ""] {
+               app.activate(options: .activateIgnoringOtherApps)
+           }
+       }
+
+    func hideAllPreviews() {
+        for previewWindow in previewWindows {
+            previewWindow.orderOut(nil)
         }
-
-        let windowImage = NSImage(cgImage: windowImageRef, size: NSZeroSize)
-
-        let tempDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
-        let fileURL = tempDirectory.appendingPathComponent("\(title).png")
-
-        guard let tiffData = windowImage.tiffRepresentation,
-              let bitmapImage = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmapImage.representation(using: .png, properties: [:]) else {
-            print("Failed to convert window image to PNG data.")
-            return
-        }
-
-        do {
-            try pngData.write(to: fileURL)
-            print("Saved window preview to \(fileURL.path)")
-        } catch {
-            print("Error saving window preview: \(error)")
-        }
+        previewWindows.removeAll()
+        currentAppWindows.removeAll()
+        print("All previews hidden")
     }
+
+    
 
     func associateDockItemWithProcesses(for element: AXUIElement) {
-        var itemName: String = "Unknown"
-        var itemPosition: CGPoint = .zero
-        var itemSize: CGSize = .zero
-        var itemSubrole: String = "Unknown"
+           var itemName: String = "Unknown"
+           var itemPosition: CGPoint = .zero
+           var itemSize: CGSize = .zero
+           var itemSubrole: String = "Unknown"
 
-        var value: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &value) == .success, let titleValue = value as? String {
-            itemName = titleValue
-        }
+           var value: CFTypeRef?
+           if AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &value) == .success, let titleValue = value as? String {
+               itemName = titleValue
+           }
 
-        if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success, let positionValue = value as! AXValue? {
-            AXValueGetValue(positionValue, .cgPoint, &itemPosition)
-        }
+           if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success, let positionValue = value as! AXValue? {
+               AXValueGetValue(positionValue, .cgPoint, &itemPosition)
+           }
 
-        if AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &value) == .success, let sizeValue = value as! AXValue? {
-            AXValueGetValue(sizeValue, .cgSize, &itemSize)
-        }
+           if AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &value) == .success, let sizeValue = value as! AXValue? {
+               AXValueGetValue(sizeValue, .cgSize, &itemSize)
+           }
 
-        if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &value) == .success, let subroleValue = value as? String {
-            itemSubrole = subroleValue
-        }
+           if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &value) == .success, let subroleValue = value as? String {
+               itemSubrole = subroleValue
+           }
 
-        if itemSubrole == "AXApplicationDockItem" {
-            print("Item: \(itemName), Position: (\(itemPosition.x), \(itemPosition.y)), Size: (\(itemSize.width), \(itemSize.height))")
+           if itemSubrole == "AXApplicationDockItem" {
+               print("Item: \(itemName), Position: (\(itemPosition.x), \(itemPosition.y)), Size: (\(itemSize.width), \(itemSize.height))")
 
-            if let app = runningApplicationsDict[itemName] {
-                print("Dock Item: \(itemName) is associated with process ID: \(app.processIdentifier) and bundle ID: \(app.bundleIdentifier ?? "Unavailable")")
-                
-                let correctedMouseLocation = getMouseLocation()
-                let itemRect = CGRect(origin: itemPosition, size: itemSize)
-                if itemRect.contains(correctedMouseLocation) {
-                    print("Mouse is currently inside the rectangle of dock item: \(itemName). Listing windows...")
-                    let windows = getWindows(for: app)
-                    for (title, _, windowID) in windows {
-                        print("Window Title: \(title)")
-                        saveWindowPreview(windowID: windowID, withTitle: title)
-                    }
-                }
-            } else {
-                print("No running application found for Dock Item: \(itemName)")
-            }
-        }
-    }
+               if let app = runningApplicationsDict[itemName] {
+                   print("Dock Item: \(itemName) is associated with process ID: \(app.processIdentifier) and bundle ID: \(app.bundleIdentifier ?? "Unavailable")")
+
+                   let correctedMouseLocation = getMouseLocation()
+                   let itemRect = CGRect(origin: itemPosition, size: itemSize)
+                   if itemRect.contains(correctedMouseLocation) {
+                       isHoveringOverAnyDockItem = true
+                       if lastHoveredDockItem != itemName {
+                           print("Mouse entered dock item: \(itemName). Listing windows...")
+                           hideAllPreviews()  // Hide previous previews before showing new ones
+                           let windows = getWindows(for: app)
+                           print("Found \(windows.count) windows for \(itemName)")
+                           displayWindowPreviews(windows: windows, atPosition: itemPosition, size: itemSize)
+                           lastHoveredDockItem = itemName
+                       }
+                   }
+               } else {
+                   print("No running application found for Dock Item: \(itemName)")
+               }
+           }
+       }
 
     func processDockItemsRecursively(from element: AXUIElement) {
         associateDockItemWithProcesses(for: element)
@@ -192,6 +332,8 @@ class AccessibilityHelper {
     func processAllDockItems() {
         let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
 
+        isHoveringOverAnyDockItem = false  // Reset at the start of each cycle
+
         if let lastApp = runningApps.last {
             let appElement = AXUIElementCreateApplication(lastApp.processIdentifier)
             if let dockChildren = subelementsFromElement(appElement, forAttribute: kAXChildrenAttribute as String) {
@@ -200,18 +342,24 @@ class AccessibilityHelper {
                 }
             }
         }
+
+        // If we're not hovering over any dock item, hide the previews
+        if !isHoveringOverAnyDockItem {
+            hideAllPreviews()
+            lastHoveredDockItem = nil
+        }
     }
+
 
     func logMouseLocationContinuously() {
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
             let mouseLocation = self.getMouseLocation()
             print("Current mouse position: (\(mouseLocation.x), \(mouseLocation.y))")
-            
+
             self.processAllDockItems()
         }
     }
 }
-
 class PermissionsService {
     var isTrusted: Bool
 
@@ -242,6 +390,8 @@ class PermissionsService {
     }
 }
 
+let app = NSApplication.shared
+
 func main() {
     print("Hello, World!")
     PermissionsService.acquireAccessibilityPrivileges()
@@ -249,10 +399,9 @@ func main() {
     let helper = AccessibilityHelper()
     helper.processAllDockItems()
     
-    // Start logging the mouse location every second
     helper.logMouseLocationContinuously()
 
-    RunLoop.current.run()
+    app.run()
 }
 
 main()
