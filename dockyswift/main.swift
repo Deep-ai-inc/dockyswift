@@ -23,8 +23,7 @@ class AccessibilityHelper {
     private var currentDockItemName: String?
     private var isHoveringOverDockItem = false
     private var lastHoveredDockItem: String?
-      private var isHoveringOverAnyDockItem = false
-
+    private var isHoveringOverAnyDockItem = false
     init() {
         guard AXIsProcessTrusted() else {
             print("Accessibility permissions are not enabled. Please go to System Preferences -> Security & Privacy -> Privacy -> Accessibility and add this application.")
@@ -38,7 +37,6 @@ class AccessibilityHelper {
             return nil
         }, uniquingKeysWith: { (first, _) in first })
     }
-
     func getMouseLocation() -> CGPoint {
         let mouseLocation = NSEvent.mouseLocation
         if let screenHeight = NSScreen.main?.frame.height {
@@ -190,89 +188,71 @@ class AccessibilityHelper {
       }
 
     private func createPreviewWindow(title: String, windowRef: AXUIElement, windowID: CGWindowID?, previewSize: CGSize) -> NSWindow {
-           let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height),
-                                        styleMask: [.borderless, .titled],
-                                        backing: .buffered,
-                                        defer: false)
-           previewWindow.title = "Preview - \(title)"
-           previewWindow.level = .screenSaver
+        let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height),
+                                     styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                     backing: .buffered,
+                                     defer: false)
+        previewWindow.title = "Preview - \(title)"
+        previewWindow.level = .floating
+        previewWindow.isOpaque = false
+        previewWindow.backgroundColor = NSColor.clear
+        previewWindow.hasShadow = true
+        previewWindow.ignoresMouseEvents = false
+        previewWindow.acceptsMouseMovedEvents = true
 
-           previewWindow.isOpaque = true
-           previewWindow.backgroundColor = NSColor.systemRed  // Bright red for high visibility
-           previewWindow.hasShadow = true
-        
-
-
-           print("Created preview window for '\(title)' with size: \(previewSize)")
-
-           return previewWindow
-       }
+        return previewWindow
+    }
     private func updatePreviewContent(window: NSWindow, title: String, windowRef: AXUIElement, windowID: CGWindowID?, previewSize: CGSize) {
-        guard let windowID = windowID else {
-            print("No valid window ID for window: \(title)")
-            return
-        }
+          guard let windowID = windowID else {
+              print("No valid window ID for window: \(title)")
+              return
+          }
 
-        let cgImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .bestResolution])
+          let cgImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .bestResolution])
 
-        DispatchQueue.main.async {
-            let imageView: ClickableImageView
-            if let existingImageView = window.contentView?.subviews.first as? ClickableImageView {
-                imageView = existingImageView
-            } else {
-                imageView = ClickableImageView(frame: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height))
-                window.contentView?.addSubview(imageView)
-            }
+          DispatchQueue.main.async {
+              let imageView: ClickableImageView
+              if let existingImageView = window.contentView?.subviews.first as? ClickableImageView {
+                  imageView = existingImageView
+              } else {
+                  imageView = ClickableImageView(frame: NSRect(x: 0, y: 0, width: previewSize.width, height: previewSize.height))
+                  window.contentView?.addSubview(imageView)
+              }
 
-            if let cgImage = cgImage {
-                let thumbnail = NSImage(cgImage: cgImage, size: previewSize)
-                imageView.image = thumbnail
-                print("Successfully updated thumbnail for window: \(title)")
-            } else {
-                print("Failed to create thumbnail for window: \(title)")
-                imageView.image = NSImage(named: "NSApplicationIcon")  // Fallback to default icon
-            }
+              if let cgImage = cgImage {
+                  let thumbnail = NSImage(cgImage: cgImage, size: previewSize)
+                  imageView.image = thumbnail
+                  print("Successfully updated thumbnail for window: \(title)")
+              } else {
+                  print("Failed to create thumbnail for window: \(title)")
+                  imageView.image = NSImage(named: "NSApplicationIcon")  // Fallback to default icon
+              }
 
-            imageView.tag = self.currentAppWindows.count - 1  // Set tag to index in currentAppWindows
-            imageView.onMouseUp = { [weak self] in
-                self?.handleImageViewClick(imageView)
-            }
+              // Store the windowRef directly in the imageView's tag property
+              imageView.tag = unsafeBitCast(windowRef, to: Int.self)
 
-            print("Added click handler for window: \(title)")
-        }
-    }
+              imageView.onMouseUp = { [weak self] in
+                  self?.handleImageViewClick(imageView)
+              }
 
+              window.makeFirstResponder(imageView)
+              print("Added click handler for window: \(title)")
+          }
+      }
     private func handleImageViewClick(_ sender: NSImageView) {
-        print("Image view clicked")
-        guard sender.tag < currentAppWindows.count else { return }
-        
-        let (_, windowRef, _) = currentAppWindows[sender.tag]
-        
-        // Bring the window to the foreground
-        AXUIElementPerformAction(windowRef, kAXRaiseAction as CFString)
-        
-        // Activate the application
-        if let app = runningApplicationsDict[currentDockItemName ?? ""] {
-            app.activate(options: .activateIgnoringOtherApps)
-        }
-    }
-       @objc private func handlePreviewClick(_ gestureRecognizer: NSClickGestureRecognizer) {
-           guard let clickedWindow = gestureRecognizer.view?.window,
-                 let index = previewWindows.firstIndex(of: clickedWindow),
-                 index < currentAppWindows.count else {
-               return
-           }
+         print("Image view clicked")
 
-           let (_, windowRef, _) = currentAppWindows[index]
-           
-           // Bring the window to the foreground
-           AXUIElementPerformAction(windowRef, kAXRaiseAction as CFString)
-           
-           // Activate the application
-           if let app = runningApplicationsDict[currentDockItemName ?? ""] {
-               app.activate(options: .activateIgnoringOtherApps)
-           }
-       }
+         // Retrieve the windowRef from the imageView's tag property
+         let windowRef = unsafeBitCast(sender.tag, to: AXUIElement.self)
+
+         // Bring the window to the foreground
+         AXUIElementPerformAction(windowRef, kAXRaiseAction as CFString)
+
+         // Activate the application
+         if let app = runningApplicationsDict[currentDockItemName ?? ""] {
+             app.activate(options: .activateIgnoringOtherApps)
+         }
+     }
 
     func hideAllPreviews() {
         for previewWindow in previewWindows {
@@ -415,7 +395,17 @@ func main() {
     
     helper.logMouseLocationContinuously()
 
-    app.run()
-}
+    // Ensure the application is set up to receive events
+    NSApplication.shared.setActivationPolicy(.regular)
+    NSApplication.shared.activate(ignoringOtherApps: true)
+
+    // Create a window to keep the application running
+    let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 200),
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                          backing: .buffered, defer: false)
+    window.title = "Accessibility Helper"
+    window.makeKeyAndOrderFront(nil)
+
+    NSApplication.shared.run()}
 
 main()
