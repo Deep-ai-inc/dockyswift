@@ -24,6 +24,7 @@ class AccessibilityHelper {
     private var isHoveringOverDockItem = false
     private var lastHoveredDockItem: String?
     private var isHoveringOverAnyDockItem = false
+    private var isHoveringOverAnyDockItemPreview = false
     init() {
         guard AXIsProcessTrusted() else {
             print("Accessibility permissions are not enabled. Please go to System Preferences -> Security & Privacy -> Privacy -> Accessibility and add this application.")
@@ -43,6 +44,28 @@ class AccessibilityHelper {
             return CGPoint(x: mouseLocation.x, y: screenHeight - mouseLocation.y)
         }
         return mouseLocation
+    }
+
+    func getUnmodifiedMouseLocation() -> CGPoint {
+    return NSEvent.mouseLocation
+    }
+
+    func checkIfMouseIsOverPreviewWindows() -> Bool {
+        print("Checking if mouse is over any preview window QUACK QUACK QUACK")
+        let mouseLocation = getUnmodifiedMouseLocation()
+        print("MOUSE LOCATION WHEN CHECKING FOR PREVIEW WINDOWS: \(mouseLocation)")
+        for previewWindow in previewWindows {
+            let windowFrame = previewWindow.frame
+            print("PREVIEW WINDOW FRAME: \(windowFrame)")
+            if windowFrame.contains(mouseLocation) {
+                print("AFFIRMATIVELY OVER PREVIEW WINDOW")
+                isHoveringOverAnyDockItemPreview = true
+                return true
+            }
+        }
+        print("AINT OVER PREVIEW WINDOW NUH-HUH")
+        isHoveringOverAnyDockItemPreview = false
+        return false
     }
 
     func subelementsFromElement(_ element: AXUIElement, forAttribute attribute: String) -> [AXUIElement]? {
@@ -326,6 +349,7 @@ class AccessibilityHelper {
         let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
 
         isHoveringOverAnyDockItem = false  // Reset at the start of each cycle
+        isHoveringOverAnyDockItemPreview = false
 
         if let lastApp = runningApps.last {
             let appElement = AXUIElementCreateApplication(lastApp.processIdentifier)
@@ -336,8 +360,9 @@ class AccessibilityHelper {
             }
         }
 
-        // If we're not hovering over any dock item, hide the previews
-        if !isHoveringOverAnyDockItem {
+        _ = checkIfMouseIsOverPreviewWindows()
+        // If we're not hovering over any dock item OR a preview, hide the previews
+        if !isHoveringOverAnyDockItem && !isHoveringOverAnyDockItemPreview {
             hideAllPreviews()
             lastHoveredDockItem = nil
         }
@@ -382,14 +407,27 @@ class PermissionsService {
             alert.runModal()
         }
     }
+    
+    static func acquireScreenRecordPermissions() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let enabled = AXIsProcessTrustedWithOptions(options)
+        
+        if !enabled {
+            let alert = NSAlert()
+            alert.messageText = "Screen Recording Permissions Required"
+        }
+    }
 }
+
 
 let app = NSApplication.shared
 
 func main() {
-    print("Hello, World!")
-    PermissionsService.acquireAccessibilityPrivileges()
+    print("quack duck")
+//    PermissionsService.acquireAccessibilityPrivileges()
 
+
+    
     let helper = AccessibilityHelper()
     helper.processAllDockItems()
     
