@@ -407,16 +407,7 @@ class PermissionsService {
             alert.runModal()
         }
     }
-    
-    static func acquireScreenRecordPermissions() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        let enabled = AXIsProcessTrustedWithOptions(options)
-        
-        if !enabled {
-            let alert = NSAlert()
-            alert.messageText = "Screen Recording Permissions Required"
-        }
-    }
+
 }
 
 
