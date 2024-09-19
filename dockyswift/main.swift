@@ -10,6 +10,10 @@ import Cocoa
 
 class ClickableImageView: NSImageView {
     var onMouseUp: (() -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
     
     override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
