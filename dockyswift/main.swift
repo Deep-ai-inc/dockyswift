@@ -20,6 +20,7 @@ class AccessibilityHelper {
     private var runningApplicationsDict: [String: NSRunningApplication]
     private var previewWindows: [NSWindow] = []
     private var currentAppWindows: [(title: String, windowRef: AXUIElement, windowID: CGWindowID?)] = []
+    private var imageViewToWindowRef: [NSImageView: AXUIElement] = [:]
     private var currentDockItemName: String?
     private var isHoveringOverDockItem = false
     private var lastHoveredDockItem: String?
@@ -254,6 +255,8 @@ class AccessibilityHelper {
               // Store the windowRef directly in the imageView's tag property
               imageView.tag = unsafeBitCast(windowRef, to: Int.self)
 
+              self.imageViewToWindowRef[imageView] = windowRef
+
               imageView.onMouseUp = { [weak self] in
                   self?.handleImageViewClick(imageView)
               }
@@ -261,20 +264,27 @@ class AccessibilityHelper {
               window.makeFirstResponder(imageView)
               print("Added click handler for window: \(title)")
           }
+
       }
     private func handleImageViewClick(_ sender: NSImageView) {
-         print("Image view clicked")
+        print("Image view clicked")
 
-         // Retrieve the windowRef from the imageView's tag property
-         let windowRef = unsafeBitCast(sender.tag, to: AXUIElement.self)
+        // Retrieve the windowRef from the dictionary
+        guard let windowRef = imageViewToWindowRef[sender] else {
+            print("No windowRef found for the clicked image view")
+            return
+        }
 
-         // Bring the window to the foreground
-         AXUIElementPerformAction(windowRef, kAXRaiseAction as CFString)
+        // Bring the window to the foreground
+        let error = AXUIElementPerformAction(windowRef, kAXRaiseAction as CFString)
+        if error != .success {
+            print("Failed to perform AXRaiseAction: \(error)")
+        }
 
-         // Activate the application
-         if let app = runningApplicationsDict[currentDockItemName ?? ""] {
-             app.activate(options: .activateIgnoringOtherApps)
-         }
+        // Activate the application
+        if let app = runningApplicationsDict[currentDockItemName ?? ""] {
+            app.activate(options: .activateIgnoringOtherApps)
+        }
      }
 
     func hideAllPreviews() {
@@ -283,6 +293,7 @@ class AccessibilityHelper {
         }
         previewWindows.removeAll()
         currentAppWindows.removeAll()
+        imageViewToWindowRef.removeAll()
         print("All previews hidden")
     }
 
@@ -328,6 +339,7 @@ class AccessibilityHelper {
                            print("Found \(windows.count) windows for \(itemName)")
                            displayWindowPreviews(windows: windows, atPosition: itemPosition, size: itemSize)
                            lastHoveredDockItem = itemName
+                           currentDockItemName = itemName  // Update currentDockItemName here
                        }
                    }
                } else {
