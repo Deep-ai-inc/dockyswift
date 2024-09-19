@@ -289,6 +289,8 @@ class AccessibilityHelper {
         if let app = runningApplicationsDict[currentDockItemName ?? ""] {
             app.activate(options: .activateIgnoringOtherApps)
         }
+
+        hideAllPreviews()
      }
 
     func hideAllPreviews() {
